@@ -176,7 +176,13 @@ class ModelEngine:
         if self.args.peft_config is None:
             if self.is_train:
                 logger.info_rank0("Fine-tuning mode: full tuning")
-                model = model.to(torch.float32)
+                target_dtype = torch.float32
+                if self._dist_config is not None and self._dist_config.get("name") == "mindspeed_fsdp2":
+                    dist_param_dtype = str(self._dist_config.get("param_dtype", "bf16")).lower()
+                    target_dtype = torch.bfloat16 if dist_param_dtype in ("bf16", "bfloat16") else torch.float32
+                    logger.info_rank0(f"Using {target_dtype} for MindSpeed/FSDPTurbo full tuning.")
+
+                model = model.to(target_dtype)
             else:
                 logger.info_rank0("Inference the original model")
         else:

@@ -52,6 +52,40 @@ from .utils.rendering import Renderer
 logger = logging.get_logger(__name__)
 
 
+def _to_float_norm(norm: torch.Tensor) -> float:
+    try:
+        from torch.distributed.tensor import DTensor
+    except Exception:  # pragma: no cover - optional torch distributed tensor API
+        DTensor = ()  # type: ignore
+
+    if isinstance(norm, DTensor):
+        norm = norm.full_tensor()
+    return float(norm.detach().float().item())
+
+
+def _clip_grad_norm_maybe_mixed_dtensor(parameters, max_norm: float) -> float:
+    params = [param for param in parameters if param.grad is not None]
+    if not params:
+        return 0.0
+
+    try:
+        from torch.distributed.tensor import DTensor
+    except Exception:  # pragma: no cover - optional torch distributed tensor API
+        return _to_float_norm(torch.nn.utils.clip_grad_norm_(params, max_norm))
+
+    dtensor_params = [param for param in params if isinstance(param.grad, DTensor)]
+    tensor_params = [param for param in params if not isinstance(param.grad, DTensor)]
+
+    if not dtensor_params or not tensor_params:
+        return _to_float_norm(torch.nn.utils.clip_grad_norm_(params, max_norm))
+
+    norms = []
+    for group in (dtensor_params, tensor_params):
+        norms.append(_to_float_norm(torch.nn.utils.clip_grad_norm_(group, max_norm, foreach=False)))
+
+    return float(sum(norm**2 for norm in norms) ** 0.5)
+
+
 class BaseTrainer:
     def __init__(
         self,
@@ -194,7 +228,10 @@ class BaseTrainer:
         """Init optimizer."""
         if self.args.optim_config is None:
             _trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-            self.optimizer = torch.optim.AdamW(_trainable_params, lr=self.args.learning_rate)
+            optimizer_kwargs = {}
+            if self.args.dist_config and self.args.dist_config.get("name") == "mindspeed_fsdp2":
+                optimizer_kwargs["foreach"] = False
+            self.optimizer = torch.optim.AdamW(_trainable_params, lr=self.args.learning_rate, **optimizer_kwargs)
         else:
             from ..plugins.trainer_plugins.optimizer import OptimizerPlugin
 
@@ -279,7 +316,7 @@ class BaseTrainer:
                     # deepspeed: engine.step() already ran inside backward at the sync boundary
                     grad_norm = self._deepspeed_engine.get_grad_norm()
                 else:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm).item()
+                    grad_norm = _clip_grad_norm_maybe_mixed_dtensor(self.model.parameters(), self.args.max_grad_norm)
 
                     if self.args.dist_config and self.args.dist_config.get("cp_size", 1) > 1:
                         grad_norm = grad_norm**2
@@ -337,7 +374,7 @@ class BaseTrainer:
 
     def save_model(self) -> None:
         """Save the model."""
-        if self.args.dist_config is not None and self.args.dist_config.name in ("deepspeed", "fsdp2"):
+        if self.args.dist_config is not None and self.args.dist_config.name in ("deepspeed", "fsdp2", "mindspeed_fsdp2"):
             from ..plugins.trainer_plugins.distributed.hub import DistributedPlugin
 
             DistributedPlugin(self.args.dist_config.name).save_model(
