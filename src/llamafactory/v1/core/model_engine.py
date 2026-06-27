@@ -44,6 +44,38 @@ from .utils.rendering import Renderer
 logger = logging.get_logger(__name__)
 
 
+def _patch_qwen35_gated_delta_path_for_npu() -> None:
+    """Enable the Qwen3.5 gated-delta NPU path without forcing FLA causal conv.
+
+    Transformers 5.4 gates the Qwen3.5 fast path behind CUDA-only package
+    checks. On NPU we can safely provide the training-time gated-delta kernel,
+    while keeping causal convolution on the stable upstream torch fallback.
+    """
+    if DistributedInterface().current_device.type != DeviceType.NPU:
+        return
+
+    try:
+        from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
+    except Exception as exc:  # pragma: no cover - optional model module
+        logger.warning_rank0(f"Skip Qwen3.5 NPU gated-delta path patch: {exc}")
+        return
+
+    try:
+        from llamafactory.third_party.triton.chunk_gated_delta_rule import (
+            chunk_gated_delta_rule as npu_chunk_gated_delta_rule,
+        )
+    except Exception as exc:
+        logger.warning_rank0(f"Qwen3.5 NPU gated-delta path dependencies are unavailable: {exc}")
+        return
+
+    modeling_qwen3_5_moe.causal_conv1d_fn = None
+    modeling_qwen3_5_moe.chunk_gated_delta_rule = npu_chunk_gated_delta_rule
+    modeling_qwen3_5_moe.is_fast_path_available = True
+    logger.info_rank0(
+        "Patched Qwen3.5 NPU gated-delta path; causal convolution remains on the Transformers fallback."
+    )
+
+
 class ModelEngine:
     """Model engine.
 
@@ -134,6 +166,7 @@ class ModelEngine:
             )
 
         if self.args.model_class == ModelClass.LLM:
+            _patch_qwen35_gated_delta_path_for_npu()
             from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 
             if type(self.model_config) in AutoModelForImageTextToText._model_mapping.keys():

@@ -1,0 +1,63 @@
+model: /home/model/Qwen3.5-35B-A3B
+trust_remote_code: true
+model_class: llm
+
+template: qwen3_5_nothink
+
+kernel_config:
+  name: auto
+  include_kernels: auto
+
+quant_config: null
+
+init_config:
+  name: init_on_meta
+
+dist_config:
+  name: mindspeed_fsdp2
+  dcp_path: null
+  cp_size: 1
+
+  ep_size: 16
+  ep_dispatcher: eager
+
+  ep_modules:
+    - model.language_model.layers.{*}.mlp.experts
+
+  ep_fsdp_modules:
+    - model.language_model.layers.{*}.mlp
+
+  fsdp_modules:
+    model.language_model.layers.{*}.linear_attn.conv1d: {}
+    model.language_model.layers.{*}.linear_attn.out_proj: {}
+    model.language_model.layers.{*}.linear_attn.in_proj_qkv: {}
+    model.language_model.layers.{*}.linear_attn.in_proj_z: {}
+    model.language_model.layers.{*}.linear_attn.in_proj_b: {}
+    model.language_model.layers.{*}.linear_attn.in_proj_a: {}
+    model.language_model.layers.{*}.self_attn.q_proj: {}
+    model.language_model.layers.{*}.self_attn.k_proj: {}
+    model.language_model.layers.{*}.self_attn.v_proj: {}
+    model.language_model.layers.{*}.self_attn.o_proj: {}
+    model.language_model.layers.{*}.mlp.gate: {}
+    model.language_model.layers.{*}.mlp.shared_expert.gate_proj: {}
+    model.language_model.layers.{*}.mlp.shared_expert.up_proj: {}
+    model.language_model.layers.{*}.mlp.shared_expert.down_proj: {}
+    model.language_model.layers.{*}.mlp.shared_expert_gate: {}
+    model.language_model.embed_tokens: {}
+    lm_head: {}
+
+  hook_modules:
+    - model.language_model.layers.{*}
+
+train_dataset: data/v1_sft_demo.yaml
+
+output_dir: outputs/perf_qwen35_a3b_mindspeed_ep_fsdp2_1000
+micro_batch_size: 1
+cutoff_len: 256
+learning_rate: 1.0e-4
+bf16: true
+max_steps: 1000
+
+### sample
+sample_backend: hf
+max_new_tokens: 128

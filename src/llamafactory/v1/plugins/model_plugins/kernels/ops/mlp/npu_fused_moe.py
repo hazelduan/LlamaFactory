@@ -33,10 +33,14 @@ except ImportError:
     pass
 
 from ......accelerator.helper import DeviceType
+from ......utils import logging
 from ......utils.packages import is_transformers_version_greater_than
 from ......utils.types import HFModel
 from ...base import BaseKernel
 from ...registry import register_kernel
+
+
+logger = logging.get_logger(__name__)
 
 
 class GmmFunction(torch.autograd.Function):
@@ -372,10 +376,17 @@ class NpuFusedMoEKernel(BaseKernel):
         if target_moe_mapping is None:
             return model
 
+        patched_count = 0
         for module in model.modules():
             class_name = module.__class__.__name__
             if class_name in target_moe_mapping:
                 new_forward_func = target_moe_mapping[class_name]
                 module.forward = types.MethodType(new_forward_func, module)
+                patched_count += 1
+
+        if patched_count > 0:
+            logger.info(f"npu_fused_moe: Patched {patched_count} MoE expert modules with NPU grouped matmul/GMM path.")
+        else:
+            logger.warning("npu_fused_moe: No MoE expert modules found to patch.")
 
         return model
