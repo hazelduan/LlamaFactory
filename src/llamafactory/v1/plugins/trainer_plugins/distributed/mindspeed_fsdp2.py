@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import torch
 
 from ....accelerator.interface import DistributedInterface
@@ -20,7 +22,6 @@ _FSDP2_NPU_COMM_PATCHED = False
 
 def _patch_fsdp2_comm_context_lazy_init() -> None:
     """Initialize native FSDP2 communication streams for non-root-wrapped modules."""
-
     global _FSDP2_NPU_COMM_PATCHED
     if _FSDP2_NPU_COMM_PATCHED:
         return
@@ -65,6 +66,17 @@ def _dtype_name(bf16: bool) -> str:
     return "bf16" if bf16 else "fp32"
 
 
+def _filter_dataclass_kwargs(cls, kwargs: dict) -> dict:
+    allowed = {field.name for field in fields(cls)}
+    return {key: value for key, value in kwargs.items() if key in allowed}
+
+
+def _attach_runtime_attrs(obj, attrs: dict) -> None:
+    for key, value in attrs.items():
+        if not hasattr(obj, key):
+            setattr(obj, key, value)
+
+
 class MindSpeedFSDP2Engine:
     """FSDPTurbo-backed FSDP2 + expert-parallel engine for V1 training."""
 
@@ -88,7 +100,9 @@ class MindSpeedFSDP2Engine:
         )
 
         dtype = _dtype_name(self.bf16)
-        fsdp_size = int(self.dist_config.get("fsdp_size", self.dist_config.get("fully_shard_parallel_size", self.world_size)))
+        fsdp_size = int(
+            self.dist_config.get("fsdp_size", self.dist_config.get("fully_shard_parallel_size", self.world_size))
+        )
         ep_size = int(self.dist_config.get("ep_size", self.dist_config.get("expert_parallel_size", 1)))
         efsdp_size = int(
             self.dist_config.get(
@@ -97,38 +111,44 @@ class MindSpeedFSDP2Engine:
             )
         )
 
-        fsdp_plan = FSDPPlanConfig(
-            apply_modules=self.dist_config.get(
-                "fsdp_modules",
-                {
-                    "model.language_model.layers.{*}.linear_attn.conv1d": {},
-                    "model.language_model.layers.{*}.linear_attn.out_proj": {},
-                    "model.language_model.layers.{*}.linear_attn.in_proj_qkv": {},
-                    "model.language_model.layers.{*}.linear_attn.in_proj_z": {},
-                    "model.language_model.layers.{*}.linear_attn.in_proj_b": {},
-                    "model.language_model.layers.{*}.linear_attn.in_proj_a": {},
-                    "model.language_model.layers.{*}.self_attn.q_proj": {},
-                    "model.language_model.layers.{*}.self_attn.k_proj": {},
-                    "model.language_model.layers.{*}.self_attn.v_proj": {},
-                    "model.language_model.layers.{*}.self_attn.o_proj": {},
-                    "model.language_model.layers.{*}.mlp.gate": {},
-                    "model.language_model.layers.{*}.mlp.shared_expert.gate_proj": {},
-                    "model.language_model.layers.{*}.mlp.shared_expert.up_proj": {},
-                    "model.language_model.layers.{*}.mlp.shared_expert.down_proj": {},
-                    "model.language_model.layers.{*}.mlp.shared_expert_gate": {},
-                    "model.language_model.embed_tokens": {},
-                    "lm_head": {},
-                },
-            ),
-            param_dtype=dtype,
-            reduce_dtype=self.dist_config.get("reduce_dtype", "fp32"),
-            output_dtype=dtype,
-            cast_forward_inputs=True,
-            reshard_after_forward=self.dist_config.get("reshard_after_forward", True),
-            num_to_forward_prefetch=self.dist_config.get("num_to_forward_prefetch", 0),
-            num_to_backward_prefetch=self.dist_config.get("num_to_backward_prefetch", 0),
-            hook_modules=self.dist_config.get("hook_modules", ["model.language_model.layers.{*}"]),
-            fsdp_implementation=self.dist_config.get("fsdp_implementation", "native"),
+        default_fsdp_modules = {
+            "model.language_model.layers.{*}.linear_attn.conv1d": {},
+            "model.language_model.layers.{*}.linear_attn.out_proj": {},
+            "model.language_model.layers.{*}.linear_attn.in_proj_qkv": {},
+            "model.language_model.layers.{*}.linear_attn.in_proj_z": {},
+            "model.language_model.layers.{*}.linear_attn.in_proj_b": {},
+            "model.language_model.layers.{*}.linear_attn.in_proj_a": {},
+            "model.language_model.layers.{*}.self_attn.q_proj": {},
+            "model.language_model.layers.{*}.self_attn.k_proj": {},
+            "model.language_model.layers.{*}.self_attn.v_proj": {},
+            "model.language_model.layers.{*}.self_attn.o_proj": {},
+            "model.language_model.layers.{*}.mlp.gate": {},
+            "model.language_model.layers.{*}.mlp.shared_expert.gate_proj": {},
+            "model.language_model.layers.{*}.mlp.shared_expert.up_proj": {},
+            "model.language_model.layers.{*}.mlp.shared_expert.down_proj": {},
+            "model.language_model.layers.{*}.mlp.shared_expert_gate": {},
+            "model.language_model.embed_tokens": {},
+            "lm_head": {},
+        }
+        fsdp_plan_kwargs = {
+            "apply_modules": self.dist_config.get("fsdp_modules", default_fsdp_modules),
+            "param_dtype": dtype,
+            "reduce_dtype": self.dist_config.get("reduce_dtype", "fp32"),
+            "output_dtype": dtype,
+            "cast_forward_inputs": True,
+            "reshard_after_forward": self.dist_config.get("reshard_after_forward", True),
+            "num_to_forward_prefetch": self.dist_config.get("num_to_forward_prefetch", 0),
+            "num_to_backward_prefetch": self.dist_config.get("num_to_backward_prefetch", 0),
+            "hook_modules": self.dist_config.get("hook_modules", ["model.language_model.layers.{*}"]),
+            "fsdp_implementation": self.dist_config.get("fsdp_implementation", "native"),
+        }
+        fsdp_plan = FSDPPlanConfig(**_filter_dataclass_kwargs(FSDPPlanConfig, fsdp_plan_kwargs))
+        _attach_runtime_attrs(
+            fsdp_plan,
+            {
+                "param_init_fn": None,
+                "reshard_after_forward": fsdp_plan_kwargs["reshard_after_forward"],
+            },
         )
         tp_plan = TPPlanConfig(
             colwise_parallel=self.dist_config.get("tp_colwise_modules", []),
@@ -140,29 +160,39 @@ class MindSpeedFSDP2Engine:
             dispatcher=self.dist_config.get("ep_dispatcher", "eager"),
             apply_efsdp_modules=self.dist_config.get("ep_fsdp_modules", []),
         )
-        quant_plan = QuantizeConfig() if self.dist_config.get("quantization_plan") is None else self.dist_config.get("quantization_plan")
+        quant_plan = (
+            QuantizeConfig()
+            if self.dist_config.get("quantization_plan") is None
+            else self.dist_config.get("quantization_plan")
+        )
 
+        distributed_kwargs = {
+            "fully_shard_parallel_size": fsdp_size,
+            "tensor_parallel_size": int(
+                self.dist_config.get("tp_size", self.dist_config.get("tensor_parallel_size", 1))
+            ),
+            "context_parallel_size": int(
+                self.dist_config.get("cp_size", self.dist_config.get("context_parallel_size", 1))
+            ),
+            "ulysses_parallel_size": int(self.dist_config.get("ulysses_parallel_size", 1)),
+            "expert_parallel_size": ep_size,
+            "expert_fully_shard_parallel_size": efsdp_size,
+            "fsdp_plan": fsdp_plan,
+            "tp_plan": tp_plan,
+            "ep_plan": ep_plan,
+        }
+        memory_kwargs = {
+            "recompute": bool(self.dist_config.get("recompute", True)),
+            "recompute_plan": self.dist_config.get("recompute_modules", ["model.language_model.layers.{*}"]),
+        }
         return FSDPTurboConfig(
-            distributed=DistributedConfig(
-                fully_shard_parallel_size=fsdp_size,
-                tensor_parallel_size=int(self.dist_config.get("tp_size", self.dist_config.get("tensor_parallel_size", 1))),
-                context_parallel_size=int(self.dist_config.get("cp_size", self.dist_config.get("context_parallel_size", 1))),
-                ulysses_parallel_size=int(self.dist_config.get("ulysses_parallel_size", 1)),
-                expert_parallel_size=ep_size,
-                expert_fully_shard_parallel_size=efsdp_size,
-                fsdp_plan=fsdp_plan,
-                tp_plan=tp_plan,
-                ep_plan=ep_plan,
-            ),
-            memory=MemoryConfig(
-                recompute=bool(self.dist_config.get("recompute", True)),
-                recompute_plan=self.dist_config.get("recompute_modules", ["model.language_model.layers.{*}"]),
-            ),
+            distributed=DistributedConfig(**_filter_dataclass_kwargs(DistributedConfig, distributed_kwargs)),
+            memory=MemoryConfig(**_filter_dataclass_kwargs(MemoryConfig, memory_kwargs)),
             quantization=QuantizationConfig(quantization_plan=quant_plan),
         )
 
     def shard_model(self, model: HFModel) -> HFModel:
-        from fsdp_turbo.fsdp_turbo import FSDPTurbo
+        from .fsdpturbo_compat import LlamaFactoryFSDPTurbo
 
         _patch_fsdp2_comm_context_lazy_init()
 
@@ -180,7 +210,9 @@ class MindSpeedFSDP2Engine:
                 config.distributed.ep_plan.dispatcher,
             )
 
-        turbo_model = FSDPTurbo(config, model, init_device=init_device, weights_path=weights_path)
-        if getattr(model, "is_gradient_checkpointing", False) and hasattr(turbo_model.model, "enable_input_require_grads"):
+        turbo_model = LlamaFactoryFSDPTurbo(config, model, init_device=init_device, weights_path=weights_path)
+        if getattr(model, "is_gradient_checkpointing", False) and hasattr(
+            turbo_model.model, "enable_input_require_grads"
+        ):
             turbo_model.model.enable_input_require_grads()
         return turbo_model
