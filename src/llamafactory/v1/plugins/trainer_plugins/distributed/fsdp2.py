@@ -190,7 +190,7 @@ class FSDP2Engine:
     def is_lora_module_wrap(self, model) -> bool:
         return any(isinstance(module, LoraLayer) for module in model.modules())
 
-    def prepare_model(self, model: HFModel) -> HFModel:
+    def prepare_model(self, model: HFModel, ignored_params: set | None = None) -> HFModel:
         if self.fsdp_mesh is None:
             logger.warning("No FSDP Mesh available, skipping FSDP wrapping.")
             return model
@@ -207,6 +207,15 @@ class FSDP2Engine:
             logger.info(f"Applying per-layer FSDP to {layer_cls.__name__}")
             transformer_layer_cls_to_wrap = {layer_cls}
 
+        fsdp_kwargs = {
+            "mesh": self.fsdp_mesh,
+            "reshard_after_forward": self.reshard_after_forward,
+            "mp_policy": mp_policy,
+            "offload_policy": CPUOffloadPolicy(pin_memory=self.pin_memory) if self.offload_params else None,
+        }
+        if ignored_params:
+            fsdp_kwargs["ignored_params"] = ignored_params
+
         if self.is_lora_module_wrap(model):
             lora_modules = []
             for module in model.modules():
@@ -216,13 +225,7 @@ class FSDP2Engine:
                     lora_modules.append(module)
 
             for module in lora_modules:
-                fully_shard(
-                    module,
-                    mesh=self.fsdp_mesh,
-                    reshard_after_forward=self.reshard_after_forward,
-                    mp_policy=mp_policy,
-                    offload_policy=CPUOffloadPolicy(pin_memory=self.pin_memory) if self.offload_params else None,
-                )
+                fully_shard(module, **fsdp_kwargs)
 
             logger.info("Applying FSDP wrap for LoRA layer separately.")
 
@@ -236,13 +239,7 @@ class FSDP2Engine:
                     should_wrap = True
 
             if should_wrap:
-                fully_shard(
-                    module,
-                    mesh=self.fsdp_mesh,
-                    reshard_after_forward=self.reshard_after_forward,
-                    mp_policy=mp_policy,
-                    offload_policy=CPUOffloadPolicy(pin_memory=self.pin_memory) if self.offload_params else None,
-                )
+                fully_shard(module, **fsdp_kwargs)
 
         # BaseTrainer is the single source of truth for gradient checkpointing.
         # FSDP2 only applies the input-grad compatibility hook when checkpointing is already enabled.
@@ -259,13 +256,7 @@ class FSDP2Engine:
 
                 model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
-        fully_shard(
-            model,
-            mesh=self.fsdp_mesh,
-            reshard_after_forward=self.reshard_after_forward,
-            mp_policy=mp_policy,
-            offload_policy=CPUOffloadPolicy(pin_memory=self.pin_memory) if self.offload_params else None,
-        )
+        fully_shard(model, **fsdp_kwargs)
 
         return model
 
