@@ -87,3 +87,22 @@ def test_qwen35_fsdpturbo_example_uses_v1_arguments():
     assert model_args.model == "Qwen/Qwen3.5-35B-A3B"
     assert model_args.custom_chat_template is None
     assert training_args.dist_config.name == "fsdpturbo"
+
+
+def test_qwen35_fsdpturbo_gpu_example_uses_current_backend_params():
+    from llamafactory.v1.plugins.trainer_plugins.distributed.interface import (
+        DistributedPlugin,
+        FSDPTurboParams,
+    )
+
+    config_file = (
+        Path(__file__).parents[2] / "examples" / "v1" / "train_full" / "train_full_qwen3_moe_fsdpturbo_gpu.yaml"
+    )
+
+    with patch.object(sys, "argv", ["test_args_parser.py", str(config_file)]):
+        _, _, training_args, _ = get_args()
+
+    params = DistributedPlugin.parse_params(training_args.dist_config, FSDPTurboParams)
+    assert training_args.cp_size == 1
+    assert params.ep_size == 8
+    assert params.ep_dispatcher == "eager"

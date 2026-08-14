@@ -1,2 +1,2 @@
-# Pin the FSDPTurbo API to a reproducible upstream main revision.
-fsdp-turbo @ git+https://gitcode.com/Ascend/FSDPTurbo.git@d878dffdb1e0312dc098599f2b56810d6b592ee2
+# FSDPTurbo main plus CUDA EP adaptations, pinned for reproducible GPU integration.
+fsdp-turbo @ git+https://gitcode.com/hazeldxq/FSDPTurbo.git@3e1f8722d3df3f1565390a197bfd920207c777a5

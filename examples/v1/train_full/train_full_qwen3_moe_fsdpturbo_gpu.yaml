@@ -1,0 +1,31 @@
+model: Qwen/Qwen3.5-35B-A3B
+model_class: llm
+
+kernel_config: null
+
+dist_config:
+  name: fsdpturbo
+  ep_size: 8
+  ep_dispatcher: eager
+
+cp_size: 1
+
+init_config:
+  name: init_on_meta
+
+### data
+train_dataset: data/v1_sft_demo.yaml
+
+### training
+output_dir: outputs/Qwen3.5-35B-A3B/full/fsdpturbo_gpu
+micro_batch_size: 1
+cutoff_len: 256
+learning_rate: 1.0e-5
+bf16: true
+enable_activation_checkpointing: true
+max_steps: 10
+logging_steps: 1
+
+### sample
+sample_backend: hf
+max_new_tokens: 128
