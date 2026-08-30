@@ -373,6 +373,8 @@ class FSDP2Engine:
         init_mode = getattr(model, "_init_mode", "init_on_default")
 
         if init_mode == "init_on_rank0":
+            non_persistent_buffers = self._save_non_persistent_buffers(model) if self.rank == 0 else {}
+
             if getattr(model.config, "tie_word_embeddings", False):
                 model.tie_weights()
 
@@ -391,6 +393,13 @@ class FSDP2Engine:
             # Broadcast the full state dict from the global rank-0 process to all ranks in this group.
             options = StateDictOptions(full_state_dict=True, cpu_offload=True, broadcast_from_rank0=True)
             set_model_state_dict(model, full_sd, options=options)
+            self._restore_non_persistent_buffers(model, non_persistent_buffers)
+            if self.world_size > 1:
+                for module in model.modules():
+                    for buffer_name in sorted(module._non_persistent_buffers_set):
+                        buffer = getattr(module, buffer_name, None)
+                        if buffer is not None:
+                            torch.distributed.broadcast(buffer, src=0)
 
             if self.rank == 0:
                 logger.info("init_on_rank0 sync complete.")
