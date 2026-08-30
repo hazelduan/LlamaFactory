@@ -266,6 +266,15 @@ def _prepare_qwen3_5_moe_for_ep(model: HFModel) -> HFModel:
     return model
 
 
+@FSDPTurboEPModelSpec.register(
+    "deepseek_v4",
+    ep_modules=["model.layers.{*}.mlp.experts"],
+    ep_fsdp_modules=["model.layers.{*}.mlp.experts"],
+)
+def _prepare_deepseek_v4_for_ep(model: HFModel) -> HFModel:
+    return model
+
+
 class FSDPTurboFSDP2Engine(FSDP2Engine):
     """FSDPTurbo EP adapter that reuses LlamaFactory's init/load flow.
 
