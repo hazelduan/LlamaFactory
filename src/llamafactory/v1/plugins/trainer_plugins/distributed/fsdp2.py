@@ -524,7 +524,8 @@ class FSDP2Engine:
         if not checkpoint_files:
             raise ValueError(f"No checkpoint files found in {hf_model_path}")
 
-        param_map = dict(model.named_parameters())
+        tensor_map = dict(model.named_parameters())
+        tensor_map.update(model.named_buffers())
         conversion_ctx = self._try_build_hf_weight_conversion_context(model)
         total_files = len(checkpoint_files)
 
@@ -559,9 +560,9 @@ class FSDP2Engine:
                                 source_pattern,
                                 _make_safetensor_loader(ckpt_file, key),
                             )
-                        elif renamed_key in param_map:
+                        elif renamed_key in tensor_map:
                             tensor = f.get_tensor(key)
-                            self._copy_weights(param_map[renamed_key], tensor)
+                            self._copy_weights(tensor_map[renamed_key], tensor)
             else:
                 state_dict = torch.load(ckpt_file, map_location="cpu")
                 for key, tensor in sorted(state_dict.items(), key=lambda item: sort_key(item[0])):
@@ -582,8 +583,8 @@ class FSDP2Engine:
                             renamed_key, copy.deepcopy(template)
                         )
                         converter.add_tensor(renamed_key, key, source_pattern, tensor)
-                    elif renamed_key in param_map:
-                        self._copy_weights(param_map[renamed_key], tensor)
+                    elif renamed_key in tensor_map:
+                        self._copy_weights(tensor_map[renamed_key], tensor)
                 del state_dict
                 gc.collect()
 
@@ -596,8 +597,8 @@ class FSDP2Engine:
                 for target_name, tensor in realized_tensors.items():
                     if isinstance(tensor, list):
                         tensor = tensor[0]
-                    if target_name in param_map:
-                        self._copy_weights(param_map[target_name], tensor)
+                    if target_name in tensor_map:
+                        self._copy_weights(tensor_map[target_name], tensor)
                 del realized_tensors
                 gc.collect()
 

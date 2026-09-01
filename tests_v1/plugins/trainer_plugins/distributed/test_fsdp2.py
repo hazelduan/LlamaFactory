@@ -14,8 +14,8 @@
 
 """Unit tests: FSDP2 meta-device loading vs normal loading consistency.
 
-Validates that the FSDP2 meta loading path behaves correctly for tied weights
-and non-persistent buffers by comparing it with the standard non-meta path.
+Validates checkpoint-backed persistent buffers and verifies that the FSDP2 meta
+loading path preserves tied weights and non-persistent buffers.
 """
 
 import torch
@@ -28,6 +28,28 @@ from llamafactory.v1.plugins.trainer_plugins.distributed.fsdp2 import FSDP2Engin
 
 
 TINY_MODEL = "llamafactory/tiny-random-qwen3"
+
+
+def test_fsdp2_hf_loading_restores_persistent_buffers(tmp_path, monkeypatch):
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(2))
+            self.register_buffer("routing_table", torch.zeros(2), persistent=True)
+
+    engine = object.__new__(FSDP2Engine)
+    engine.rank = 1
+    monkeypatch.setattr(engine, "_try_build_hf_weight_conversion_context", lambda _: None)
+    torch.save(
+        {"weight": torch.tensor([1.0, 2.0]), "routing_table": torch.tensor([3.0, 4.0])},
+        tmp_path / "pytorch_model.bin",
+    )
+
+    model = _Model()
+    engine._load_weights_from_hf_checkpoint(model, str(tmp_path))
+
+    assert torch.equal(model.weight, torch.tensor([1.0, 2.0]))
+    assert torch.equal(model.routing_table, torch.tensor([3.0, 4.0]))
 
 
 def collect_non_persistent_buffers(model):

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.multiprocessing as mp
@@ -20,9 +22,10 @@ from llamafactory.v1.accelerator.interface import DistributedInterface
 from llamafactory.v1.config.model_args import ModelArguments
 from llamafactory.v1.config.training_args import TrainingArguments
 from llamafactory.v1.core.model_engine import ModelEngine
-from llamafactory.v1.plugins.model_plugins.parallelization import ulysses
+from llamafactory.v1.plugins.model_plugins.parallelization import sequence_parallel, ulysses
 from llamafactory.v1.plugins.model_plugins.parallelization.sequence_parallel import (
     SequenceParallelModelPlugin,
+    _get_deepseek_v4_eager_attention_fn,
     sequence_parallel_loss,
 )
 from llamafactory.v1.utils.env import find_available_port
@@ -60,6 +63,51 @@ def test_true_mrope_position_ids_are_not_used_as_packed_boundaries():
     mrope_position_ids = torch.tensor([[[0, 1, 2]], [[0, 1, 1]], [[0, 1, 0]]])
 
     assert ulysses._get_text_position_ids(mrope_position_ids) is None
+
+
+def test_deepseek_v4_eager_attention_adapts_ulysses_heads_and_mask(monkeypatch: pytest.MonkeyPatch):
+    group = object()
+    module = SimpleNamespace(
+        config=SimpleNamespace(sliding_window=2),
+        num_key_value_groups=4,
+        sinks=torch.arange(4, dtype=torch.float32),
+        sliding_window=2,
+        training=True,
+    )
+    query = torch.zeros(1, 2, 4, 3)
+    local_mask = torch.tensor([[[[0.0, torch.finfo(torch.float32).min], [0.0, 0.0]]]])
+    captured = {}
+
+    monkeypatch.setattr(sequence_parallel.dist, "get_world_size", lambda _: 2)
+    monkeypatch.setattr(sequence_parallel.dist, "get_rank", lambda _: 1)
+
+    def fake_all_gather(outputs, tensor, **_):
+        for output in outputs:
+            output.copy_(tensor)
+
+    monkeypatch.setattr(sequence_parallel.dist, "all_gather", fake_all_gather)
+
+    def eager_attention(module, query, key, value, attention_mask, **kwargs):
+        captured["num_key_value_groups"] = module.num_key_value_groups
+        captured["sinks"] = module.sinks
+        captured["attention_mask"] = attention_mask
+        captured["s_aux"] = kwargs["s_aux"]
+        return query, None
+
+    wrapped = _get_deepseek_v4_eager_attention_fn(eager_attention, group)
+    output, _ = wrapped(module, query, query, query, local_mask)
+
+    assert output is query
+    assert captured["num_key_value_groups"] == 1
+    assert captured["sinks"].tolist() == [2.0, 3.0]
+    assert torch.equal(captured["sinks"], captured["s_aux"])
+    assert captured["attention_mask"].shape == (1, 1, 4, 4)
+    assert (captured["attention_mask"][0, 0] == 0).tolist() == [
+        [True, False, False, False],
+        [True, True, False, False],
+        [False, True, True, False],
+        [False, False, True, True],
+    ]
 
 
 def _test_sequence_parallel_loss(

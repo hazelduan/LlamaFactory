@@ -149,11 +149,6 @@ class BaseTrainer:
         if self.args.cp_size > 1:
             from ..plugins.model_plugins.parallelization.sequence_parallel import SequenceParallelModelPlugin
 
-            if model.config._attn_implementation != "flash_attention_2":
-                raise ValueError(
-                    "Sequence parallelism requires flash attention. Please set `flash_attn: flash_attention_2`."
-                )
-
             SequenceParallelModelPlugin(self.args.cp_mode)(model, self.args.cp_size)
 
     def _create_batch_generator(self) -> None:
