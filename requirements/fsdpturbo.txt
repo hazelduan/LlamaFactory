@@ -1,2 +1,2 @@
-# Pin the FSDPTurbo API to a reproducible upstream main revision.
-fsdp-turbo @ git+https://gitcode.com/Ascend/FSDPTurbo.git@d878dffdb1e0312dc098599f2b56810d6b592ee2
+# Pin the Ulysses source-rank ordering fix to an immutable revision.
+fsdp-turbo @ git+https://gitcode.com/hazeldxq/FSDPTurbo.git@c71d63813d7c2ffd8cb742f5acf78b3ec372c854

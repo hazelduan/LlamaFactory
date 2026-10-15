@@ -126,6 +126,38 @@ def _allreduce_sum_(value: torch.Tensor, groups: list[object]) -> torch.Tensor:
     return value
 
 
+@torch.no_grad()
+def _synchronize_cp_gradients(params, group) -> None:
+    """Average CP-replicated shards before clipping or updating their parameters."""
+    if group is None or not params:
+        return
+    cp_size = torch.distributed.get_world_size(group)
+    if cp_size <= 1:
+        return
+    device = DistributedInterface().current_device
+    present = torch.tensor([param.grad is not None for param in params], device=device, dtype=torch.int32)
+    torch.distributed.all_reduce(present, group=group)
+    # A replica without a local contribution still participates with a zero shard.
+    present = present.tolist()
+    # Bound the temporary FP32 reduction buffer even for large expert tensors.
+    chunk_elements = 8 * 1024 * 1024
+    for param, count in zip(params, present):
+        if not count:
+            continue
+        if param.grad is None:
+            param.grad = torch.zeros_like(param)
+        grad = param.grad
+        local_grad = grad.to_local() if hasattr(grad, "to_local") else grad
+        contiguous = local_grad.contiguous()
+        for chunk in contiguous.view(-1).split(chunk_elements):
+            reduced = chunk.to(device=device, dtype=torch.float32)
+            torch.distributed.all_reduce(reduced, group=group)
+            reduced.div_(cp_size)
+            chunk.copy_(reduced)
+        if not local_grad.is_contiguous():
+            local_grad.copy_(contiguous)
+
+
 def clip_grad_norm_(model: HFModel, max_norm: float, **kwargs) -> float:
     """CP-aware grad norm clipping for FSDPTurbo EP + EFSDP + outer FSDP2.
 
@@ -154,12 +186,12 @@ def clip_grad_norm_(model: HFModel, max_norm: float, **kwargs) -> float:
     ep_params: list[torch.nn.Parameter] = []
     non_ep_params: list[torch.nn.Parameter] = []
     for param in model.parameters():
-        grad = getattr(param, "grad", None)
-        if grad is None:
+        if not param.requires_grad:
             continue
-
-        mesh_names = set(getattr(getattr(grad, "device_mesh", None), "mesh_dim_names", ()) or ())
-        is_ep_side = isinstance(grad, DTensor) and bool(mesh_names & {parallel_state.EP, parallel_state.EFSDP})
+        grad = getattr(param, "grad", None)
+        tensor = param if grad is None else grad
+        mesh_names = set(getattr(getattr(tensor, "device_mesh", None), "mesh_dim_names", ()) or ())
+        is_ep_side = isinstance(tensor, DTensor) and bool(mesh_names & {parallel_state.EP, parallel_state.EFSDP})
         if is_ep_side:
             ep_params.append(param)
         else:
@@ -168,13 +200,17 @@ def clip_grad_norm_(model: HFModel, max_norm: float, **kwargs) -> float:
     if not ep_params and not non_ep_params:
         return 0.0
 
+    # CP ranks own different token contributions to the same parameter shard.
+    # Sum backward from the replicated CP loss is compensated by this mean.
+    _synchronize_cp_gradients(non_ep_params, cp_group)
+    _synchronize_cp_gradients(ep_params, expert_cp_group)
     total_pth = torch.zeros((), device=device, dtype=torch.float32)
     if non_ep_params:
         non_ep_pth = _local_pth_sum(non_ep_params, norm_type, device)
-        total_pth = total_pth + _allreduce_sum_(non_ep_pth, [dp_group, cp_group])
+        total_pth = total_pth + _allreduce_sum_(non_ep_pth, [dp_group])
     if ep_params:
         ep_pth = _local_pth_sum(ep_params, norm_type, device)
-        total_pth = total_pth + _allreduce_sum_(ep_pth, [efsdp_group, ep_group, expert_cp_group])
+        total_pth = total_pth + _allreduce_sum_(ep_pth, [efsdp_group, ep_group])
 
     total_norm = total_pth.pow(1.0 / norm_type)
     clip_coef = min(max_norm / (float(total_norm.item()) + 1e-6), 1.0)
