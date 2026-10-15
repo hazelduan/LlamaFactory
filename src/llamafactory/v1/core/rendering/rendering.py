@@ -58,7 +58,7 @@ def _render_messages(
     is_multimodal = not is_tokenizer(processor)
 
     template_caller = processor if is_multimodal else tokenizer
-    if not getattr(template_caller, "chat_template", None):
+    if not getattr(template_caller, "chat_template", None) and not kwargs.get("chat_template"):
         template_caller.chat_template = _FALLBACK_CHATML_JINJA
 
     # 0. Neutralize special-token strings in user-controlled text (no-op for normal data).

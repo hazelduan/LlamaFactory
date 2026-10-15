@@ -36,10 +36,10 @@ from transformers import AutoConfig, AutoProcessor
 from ..accelerator.helper import DeviceType
 from ..accelerator.interface import DistributedInterface
 from ..config.model_args import ModelArguments, ModelClass
+from ..models import create_renderer
 from ..utils import logging
 from ..utils.helper import get_tokenizer, is_tokenizer
 from ..utils.types import HFConfig, HFModel, Processor
-from .rendering import Renderer
 
 
 logger = logging.get_logger(__name__)
@@ -67,7 +67,9 @@ class ModelEngine:
         self._sync_chat_template()
         self.model_config = self._init_model_config()
         """Model configuration."""
-        self.renderer = Renderer(self.processor)
+        self.renderer = create_renderer(
+            self.processor, self.model_config, use_model_template=not bool(self.args.custom_chat_template)
+        )
         """Renderer."""
         self._deepspeed_zero3_enabled = False
 
