@@ -43,6 +43,14 @@ def test_qwen35_ep_model_spec():
     assert spec.ep_fsdp_modules == ["model.language_model.layers.{*}.mlp"]
 
 
+def test_deepseek_v4_ep_model_spec():
+    spec = FSDPTurboEPModelSpec.get(_Model("deepseek_v4"))
+
+    assert spec is not None
+    assert spec.ep_modules == ["model.layers.{*}.mlp.experts"]
+    assert spec.ep_fsdp_modules == ["model.layers.{*}.mlp.experts"]
+
+
 def test_fsdpturbo_uses_class_plugin_and_strict_backend_params():
     plugin = DistributedPlugin("fsdpturbo")
     params = plugin.parse_params({"name": "fsdpturbo", "ep_size": 4}, FSDPTurboParams)
