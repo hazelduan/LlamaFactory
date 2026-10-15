@@ -149,3 +149,25 @@ def test_fsdp2_meta_loading_buffers_and_tied_weights():
         mb = meta_non_persistent[key]
         assert nb.shape == mb.shape, f"Buffer shape mismatch: {key}"
         assert torch.allclose(nb.float(), mb.float(), atol=1e-5), f"Buffer value mismatch: {key}"
+
+
+def test_fsdp2_hf_loading_restores_persistent_buffers(tmp_path, monkeypatch):
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(2))
+            self.register_buffer("routing_table", torch.zeros(2), persistent=True)
+
+    engine = object.__new__(FSDP2Engine)
+    engine.rank = 1
+    monkeypatch.setattr(engine, "_try_build_hf_weight_conversion_context", lambda _: None)
+    torch.save(
+        {"weight": torch.tensor([1.0, 2.0]), "routing_table": torch.tensor([3.0, 4.0])},
+        tmp_path / "pytorch_model.bin",
+    )
+
+    model = _Model()
+    engine._load_weights_from_hf_checkpoint(model, str(tmp_path))
+
+    assert torch.equal(model.weight, torch.tensor([1.0, 2.0]))
+    assert torch.equal(model.routing_table, torch.tensor([3.0, 4.0]))
