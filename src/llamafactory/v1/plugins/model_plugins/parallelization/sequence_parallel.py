@@ -40,6 +40,16 @@ def apply_sequence_parallel(model, cp_size: int):
 
     install_sequence_parallel_hook(model)
     group = DistributedInterface().get_group(Dim.CP)
+    if getattr(model.config, "model_type", None) == "deepseek_v4":
+        from .deepseek_v4 import apply_deepseek_v4_sequence_parallel
+
+        if getattr(model.config, "_attn_implementation", None) != "eager":
+            raise ValueError("DeepSeek V4 sequence parallelism requires its upstream eager attention implementation.")
+        apply_deepseek_v4_sequence_parallel(model, group)
+        return
+
+    if getattr(model.config, "_attn_implementation", None) != "flash_attention_2":
+        raise ValueError("Sequence parallelism requires flash attention. Please set `flash_attn: flash_attention_2`.")
     apply_ulysses_attention(model, cp_size, group)
     apply_gdn_attention(model, cp_size)
 
